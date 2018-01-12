@@ -14,7 +14,7 @@
 
 enum e_event_types
 {
-	evt_note_off = 0,
+	evt_note_off = 0, 
 	evt_note_on,
 	evt_aftertouch,
 	evt_ctrl_change,
@@ -23,7 +23,6 @@ enum e_event_types
 	evt_pitch_bend
 };
 
-//#include <string.h>
 int str_eq(const char *t1, const char *t2)
 {
 	int x = 0;
@@ -119,7 +118,7 @@ void sort_events()
 	}
 }
 
-void save_events(char *fname, uint32_t channel_mask)
+void save_events(char *fname, uint64_t track_mask)
 {
 	int handle = open(fname, O_WRONLY | O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
 	
@@ -132,7 +131,7 @@ void save_events(char *fname, uint32_t channel_mask)
 	char tbuf[1024];
 	for(int x = 0; x < events_count; x++)
 	{
-		if(!((1<<events[x].channel) & channel_mask)) continue;
+		if(!((1<<events[x].track) & track_mask)) continue;
 		
 		int len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
 		if(write(handle, tbuf, len) < len)
@@ -504,16 +503,66 @@ int main(int argc, char **argv)
 {
 	if(argc < 3)
 	{
-		printf("\nMIDI file parser v1.0\nusage: midi_parser <input filename> <output filename>\n");
+		printf("\nMIDI file parser v1.0\nusage: midi_parser -flags <input filename> <output filename>\n");
+		printf("flags define which MIDI events from which tracks will and will not be stored\n");
+		printf("track flags starts with -t to enable track\n");
+		printf("-t1 -t2 will enable first and second tracks\n");
+		printf("-tall will enable all tracks (default option)\n");
+		printf("event flag starts with -e to disable, -E to enable event\n");
+		printf("events:\n");
+		printf("\tNON - Note On\n");
+		printf("\tNOFF - Note Off\n");
+		printf("\tAFT - Aftertouch\n");
+		printf("\tCC - Controller Change\n");
+		printf("\tPC - Program Change\n");
+		printf("\tCKP - Channel Key Pressure\n");
+		printf("\tPB - Pitch Bend\n");
+
+		printf("\nBy default, events Note On and Note off are stored, all others ignored\n");
+		printf("example:\n");
+
+		printf("midi_parser -t2 -eNON -eNOFF -ECC -EPC -EPB input.mid output.txt\n");
+		printf("this command will store only Controller Change, Program Change and Pitch Bend events on track 2\n");
+		
 		return 1;
 	}
-//	int export_track = atoi(argv[2]);
+	
+	int send_events = SEND_NOTE_ON | SEND_NOTE_OFF;
+	
+	uint64_t track_mask = 0;
+
+	for(int a = 1; a < argc-2; a++)
+	{
+		if(str_eq(argv[a], "-eNON")) send_events &= ~SEND_NOTE_ON;
+		if(str_eq(argv[a], "-ENON")) send_events |= SEND_NOTE_ON;
+		if(str_eq(argv[a], "-eNOFF")) send_events &= ~SEND_NOTE_OFF;
+		if(str_eq(argv[a], "-ENOFF")) send_events |= SEND_NOTE_OFF;
+		if(str_eq(argv[a], "-eAFT")) send_events &= ~SEND_AFTERTOUCH;
+		if(str_eq(argv[a], "-EAFT")) send_events |= SEND_AFTERTOUCH;
+		if(str_eq(argv[a], "-eCC")) send_events &= ~SEND_CTRL_CHANGE;
+		if(str_eq(argv[a], "-ECC")) send_events |= SEND_CTRL_CHANGE;
+		if(str_eq(argv[a], "-ePC")) send_events &= ~SEND_PROG_CHANGE;
+		if(str_eq(argv[a], "-EPC")) send_events |= SEND_PROG_CHANGE;
+		if(str_eq(argv[a], "-eCKP")) send_events &= ~SEND_CHAN_KEYPRES;
+		if(str_eq(argv[a], "-ECKP")) send_events |= SEND_CHAN_KEYPRES;
+		if(str_eq(argv[a], "-ePB")) send_events &= ~SEND_PITCH_BEND;
+		if(str_eq(argv[a], "-EPB")) send_events |= SEND_PITCH_BEND;
+		if(argv[a][0] == '-' && argv[a][1] == 't')
+		{
+			int tnum = 0;
+			if(argv[a][2] >= '0' && argv[a][2] <= '9') tnum += argv[a][2]-'0';
+			if(argv[a][3] >= '0' && argv[a][3] <= '9') tnum = tnum*10 + argv[a][3]-'0';
+			if(tnum > 0 && tnum < 65) track_mask |= (1<<(tnum-1));
+		}
+	}
+	if(track_mask == 0) track_mask = 0xFFFFFFFFFFFFFFFF;
+
 	read_file(argv[argc-2]);
 	if(file_length < 1) return 1;
 	
-	parse_midi(file_buf, file_length, 0xFF);
+	parse_midi(file_buf, file_length, send_events);
 	sort_events();
-	save_events(argv[argc-1], 0xFF);
+	save_events(argv[argc-1], track_mask);
 	
 	delete[] file_buf;
 	return 0;
