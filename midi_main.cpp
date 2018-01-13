@@ -66,6 +66,7 @@ uint32_t tempo_value[MAX_TEMPO_POINTS];
 
 typedef struct sMIDI_event
 {
+	uint8_t active; //whant to turn off some events during post processing
 	uint32_t T;
 	uint8_t type;
 	uint8_t track;
@@ -74,6 +75,7 @@ typedef struct sMIDI_event
 	int value; //stores also pitch bend values
 	void set_to(sMIDI_event e)
 	{
+		active = e.active;
 		T = e.T;
 		type = e.type;
 		track = e.track;
@@ -116,6 +118,44 @@ void sort_events()
 				events[n].set_to(events[n2]);
 				events[n2].set_to(ee);
 			}
+		}
+	}
+}
+
+void process_overlaps(int overlap_master)
+{
+	uint8_t keys_on[255];
+	int keys_last_time[255];
+	for(int x = 0; x < 255; x++)
+	{
+		keys_on[x] = 0;
+		keys_last_time[x] = -1;
+	}
+	for(int n = 0; n < events_count; n++)
+	{
+		sMIDI_event *evt = events+n;
+		if(evt->type < 2)
+		{
+			if(evt->T - keys_last_time[evt->key] < 1) evt->T++; //potentially can lead to wrong events order in the output, but practically unlikely
+			keys_last_time[evt->key] = evt->T;
+		}
+		if(evt->type == 1)
+		{
+			if(keys_on[evt->key])
+			{
+				if(evt->track == overlap_master)
+					keys_on[evt->key]++;
+				evt->active = 0;
+			}
+		}
+		if(evt->type == 0)
+		{
+			if(keys_on[evt->key] > 1)
+			{ 
+				keys_on[evt->key]--;
+				evt->active = 0;
+			}
+			else keys_on[evt->key] = 0;
 		}
 	}
 }
@@ -203,10 +243,11 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 		if(!tempo_fixed)
 		{
 			cur_tempo = get_tempo(T);
-			ticks_to_ms = (float)(cur_tempo / 1000) / (float)(ticks_per_qn);
+			ticks_to_ms = ((double)cur_tempo / 1000.0) / (double)(ticks_per_qn);
 		}
 		T += dt * ticks_to_ms;
 		sMIDI_event evt;
+		evt.active = 1;
 		evt.T = T;
 		evt.channel = channel;
 		evt.track = track_num;
@@ -306,7 +347,7 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 		}
 		if(type == 0xF)
 		{
-			out_verbose = 0;
+			out_verbose = 1;
 			if(channel == 0)
 			{
 				if(out_verbose) printf("(%d) sysex F0\n", T);
@@ -530,6 +571,9 @@ int main(int argc, char **argv)
 		printf("\tPB - Pitch Bend (code %d)\n", evt_pitch_bend);
 		printf("\tTE - Track End (code %d)\n", evt_track_end);
 
+		printf("\n\nAdditional options:\n");
+		printf("\tCUTOVP - cut overlapping notes\n");
+
 		printf("\nBy default, events Note On, Note off and Track End are stored, all others ignored\n");
 		printf("example:\n");
 
@@ -547,6 +591,8 @@ int main(int argc, char **argv)
 	int send_events = SEND_NOTE_ON | SEND_NOTE_OFF | SEND_TRACK_END;
 	
 	uint64_t track_mask = 0;
+	int prevent_overlap = 0;
+	int overlap_master = 1;
 
 	for(int a = 1; a < argc-2; a++)
 	{
@@ -566,6 +612,7 @@ int main(int argc, char **argv)
 		if(str_eq(argv[a], "-EPB")) send_events |= SEND_PITCH_BEND;
 		if(str_eq(argv[a], "-eTE")) send_events &= ~SEND_TRACK_END;
 		if(str_eq(argv[a], "-ETE")) send_events |= SEND_TRACK_END;
+		
 		if(argv[a][0] == '-' && argv[a][1] == 't')
 		{
 			int tnum = 0;
@@ -573,6 +620,8 @@ int main(int argc, char **argv)
 			if(argv[a][3] >= '0' && argv[a][3] <= '9') tnum = tnum*10 + argv[a][3]-'0';
 			if(tnum > 0 && tnum < 65) track_mask |= (1<<(tnum-1));
 		}
+		
+		if(str_eq(argv[a], "-CUTOVP")) prevent_overlap = 1;
 	}
 	if(track_mask == 0) track_mask = 0xFFFFFFFFFFFFFFFF;
 
@@ -581,6 +630,8 @@ int main(int argc, char **argv)
 	
 	parse_midi(file_buf, file_length, send_events);
 	sort_events();
+	if(prevent_overlap)
+		process_overlaps(overlap_master);
 	save_events(argv[argc-1], track_mask);
 	
 	delete[] file_buf;
