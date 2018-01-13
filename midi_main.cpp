@@ -11,6 +11,7 @@
 #define SEND_PROG_CHANGE	0b00010000
 #define SEND_CHAN_KEYPRES	0b00100000
 #define SEND_PITCH_BEND		0b01000000
+#define SEND_TRACK_END		0b10000000
 
 enum e_event_types
 {
@@ -20,7 +21,8 @@ enum e_event_types
 	evt_ctrl_change,
 	evt_prog_change,
 	evt_chan_keypress,
-	evt_pitch_bend
+	evt_pitch_bend,
+	evt_track_end
 };
 
 int str_eq(const char *t1, const char *t2)
@@ -41,9 +43,9 @@ int parse_vbl(uint8_t *buf, uint32_t *res)
 {
 	uint32_t val = 0;
 	int pp = 0;
-	while(buf[pp] >= 128)
+	while(buf[pp] & 0x80)
 	{
-		val |= buf[pp] & 0x7F;
+		val += buf[pp] & 0x7F;
 		val <<= 7;
 		pp++;
 	}
@@ -153,11 +155,11 @@ void add_tempo_point(uint32_t ms, uint32_t tempo)
 
 uint32_t get_tempo(uint32_t ms)
 {
-	for(int x = 0; x < tempo_points; x++)
+	for(int x = tempo_points-1; x >= 0; x--)
 	{
 		if(ms >= tempo_ms[x]) return tempo_value[x];
 	}
-	return 500000; //reasonable default
+	return 500000; //MIDI default
 }
 
 int key_map(int key)
@@ -179,13 +181,9 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 	int pos = 0;
 	uint32_t T = 0;
 	int unhandled_sum = 0;
-	int out_verbose = 0;//out_process;
+	int out_verbose = 1;//out_process;
 	int send_out = out_process;
-	if(send_out)
-	{
-//		printf("ser.write('<0,3,0,0>')\n"); //track start event
-		printf("0,3,0,0\n"); //track start event
-	}
+
 	while(pos < length)
 	{
 		uint32_t dt;
@@ -195,18 +193,20 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 		uint8_t b1 = buf[pos+1];
 		uint8_t b2 = buf[pos+2];
 		int handled = 0;
+		uint32_t cur_tempo = 0;
 		if(!tempo_fixed)
 		{
-			uint32_t cur_tempo = get_tempo(T);
+			cur_tempo = get_tempo(T);
 			ticks_to_ms = (float)(cur_tempo / 1000) / (float)(ticks_per_qn);
 		}
 		T += dt * ticks_to_ms;
+		sMIDI_event evt;
+		evt.T = T;
+		evt.channel = channel;
+		evt.track = track_num;
 		if(type >= 0x8 && type < 0xF)
 		{
-			sMIDI_event evt;
-			evt.T = T;
-			evt.channel = channel;
-			evt.track = track_num;
+			out_verbose = 0;
 			if(type == 8)
 			{
 				if(send_out & SEND_NOTE_OFF)
@@ -300,6 +300,7 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 		}
 		if(type == 0xF)
 		{
+			out_verbose = 0;
 			if(channel == 0)
 			{
 				if(out_verbose) printf("(%d) sysex F0\n", T);
@@ -371,10 +372,12 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				if(b1 == 0x2F) 
 				{
 					if(out_verbose) printf("(%d) meta track end\n", T); 
-					if(send_out)
+					if(send_out & SEND_TRACK_END)
 					{
-//						printf("ser.write('<%d,4,0,0>')\n", T); //track end event
-						printf("%d,4,0,0\n", T); //track end event
+						evt.type = evt_track_end;
+						evt.key = 255;
+						evt.value = 255;
+						add_event(evt);
 					}
 					handled = 1; 
 					pos += 3;
@@ -384,6 +387,8 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 					uint32_t mpqn = (buf[pos+3]<<16)|(buf[pos+4]<<8)|buf[pos+5];
 					if(out_verbose) printf("(%d) meta tempo %d\n", T, mpqn);
 					add_tempo_point(T, mpqn);
+					ticks_to_ms = (float)(mpqn / 1000.0) / (float)(ticks_per_qn);
+					
 					handled = 1; 
 					pos += 6;
 				}
@@ -449,7 +454,7 @@ void parse_midi(uint8_t *buf, int length, int send_out)
 			int format = (buf[pos+8]<<8) | buf[pos+8+1];
 			int tracks = (buf[pos+8+2]<<8) | buf[pos+8+3];
 			int tpqn_type = !(buf[pos+8+4] > 0x7F);
-			int tpqn = ((buf[pos+8+4]&0x7F)<<8) | buf[pos+8+5];
+			int tpqn = (buf[pos+8+4]<<8) | buf[pos+8+5];
 			int fps = buf[pos+8+4]&0x7F;
 			int tpf = buf[pos+8+5];
 
@@ -510,15 +515,16 @@ int main(int argc, char **argv)
 		printf("-tall will enable all tracks (default option)\n");
 		printf("event flag starts with -e to disable, -E to enable event\n");
 		printf("events:\n");
-		printf("\tNON - Note On\n");
-		printf("\tNOFF - Note Off\n");
-		printf("\tAFT - Aftertouch\n");
-		printf("\tCC - Controller Change\n");
-		printf("\tPC - Program Change\n");
-		printf("\tCKP - Channel Key Pressure\n");
-		printf("\tPB - Pitch Bend\n");
+		printf("\tNOFF - Note Off (code %d)\n", evt_note_off);
+		printf("\tNON - Note On (code %d)\n", evt_note_on);
+		printf("\tAFT - Aftertouch (code %d)\n", evt_aftertouch);
+		printf("\tCC - Controller Change (code %d)\n", evt_ctrl_change);
+		printf("\tPC - Program Change (code %d)\n", evt_prog_change);
+		printf("\tCKP - Channel Key Pressure (code %d)\n", evt_chan_keypress);
+		printf("\tPB - Pitch Bend (code %d)\n", evt_pitch_bend);
+		printf("\tTE - Track End (code %d)\n", evt_track_end);
 
-		printf("\nBy default, events Note On and Note off are stored, all others ignored\n");
+		printf("\nBy default, events Note On, Note off and Track End are stored, all others ignored\n");
 		printf("example:\n");
 
 		printf("midi_parser -t2 -eNON -eNOFF -ECC -EPC -EPB input.mid output.txt\n");
@@ -527,7 +533,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	
-	int send_events = SEND_NOTE_ON | SEND_NOTE_OFF;
+	int send_events = SEND_NOTE_ON | SEND_NOTE_OFF | SEND_TRACK_END;
 	
 	uint64_t track_mask = 0;
 
@@ -547,6 +553,8 @@ int main(int argc, char **argv)
 		if(str_eq(argv[a], "-ECKP")) send_events |= SEND_CHAN_KEYPRES;
 		if(str_eq(argv[a], "-ePB")) send_events &= ~SEND_PITCH_BEND;
 		if(str_eq(argv[a], "-EPB")) send_events |= SEND_PITCH_BEND;
+		if(str_eq(argv[a], "-eTE")) send_events &= ~SEND_TRACK_END;
+		if(str_eq(argv[a], "-ETE")) send_events |= SEND_TRACK_END;
 		if(argv[a][0] == '-' && argv[a][1] == 't')
 		{
 			int tnum = 0;
