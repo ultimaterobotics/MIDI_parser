@@ -122,7 +122,7 @@ void sort_events()
 
 void save_events(char *fname, uint64_t track_mask)
 {
-	int handle = open(fname, O_WRONLY | O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
+	int handle = open(fname, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
 	
 	if(handle < 1)
 	{
@@ -136,6 +136,12 @@ void save_events(char *fname, uint64_t track_mask)
 		if(!((1<<events[x].track) & track_mask)) continue;
 		
 		int len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
+/*		int conv[16];
+		conv[0] = 2;
+		conv[1] = 1;
+		conv[7] = 4;
+		int len = sprintf(tbuf, "%d,%d,%d,%d\n", events[x].T, conv[events[x].type], events[x].key, events[x].value*(events[x].type != 0));
+*/
 		if(write(handle, tbuf, len) < len)
 			fprintf(stderr, "write %d bytes failed\n", len);
 
@@ -529,6 +535,11 @@ int main(int argc, char **argv)
 
 		printf("midi_parser -t2 -eNON -eNOFF -ECC -EPC -EPB input.mid output.txt\n");
 		printf("this command will store only Controller Change, Program Change and Pitch Bend events on track 2\n");
+
+		printf("\nOutput format: time in milliseconds, track, channel, type, key, value\n");
+		printf("For events that are not related to a specific key, key field is set to 255\n");
+		printf("For events that don't have valid value, it is set to 255\n");
+		printf("\n");
 		
 		return 1;
 	}
