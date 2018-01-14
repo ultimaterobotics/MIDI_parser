@@ -203,7 +203,11 @@ uint32_t get_tempo(uint32_t ms)
 {
 	for(int x = tempo_points-1; x >= 0; x--)
 	{
-		if(ms >= tempo_ms[x]) return tempo_value[x];
+		if(ms >= tempo_ms[x])
+		{
+//			if(x > 0) return tempo_value[x-1];
+			return tempo_value[x];
+		}
 	}
 	return 500000; //MIDI default
 }
@@ -211,10 +215,6 @@ uint32_t get_tempo(uint32_t ms)
 double get_dt_ms(uint32_t start_ms, uint32_t ticks)
 {
 	if(tempo_fixed) return ticks * ticks_to_ms;
-
-	double cur_tempo = get_tempo(start_ms);
-	ticks_to_ms = (cur_tempo / 1000.0) / (double)(ticks_per_qn);	
-	return ticks * ticks_to_ms;
 
 	double ms = start_ms;
 	for(uint32_t t = 0; t < ticks; t++)
