@@ -208,6 +208,24 @@ uint32_t get_tempo(uint32_t ms)
 	return 500000; //MIDI default
 }
 
+double get_dt_ms(uint32_t start_ms, uint32_t ticks)
+{
+	if(tempo_fixed) return ticks * ticks_to_ms;
+
+	double cur_tempo = get_tempo(start_ms);
+	ticks_to_ms = (cur_tempo / 1000.0) / (double)(ticks_per_qn);	
+	return ticks * ticks_to_ms;
+
+	double ms = start_ms;
+	for(uint32_t t = 0; t < ticks; t++)
+	{
+		double cur_tempo = get_tempo(ms);
+		ticks_to_ms = (cur_tempo / 1000.0) / (double)(ticks_per_qn);
+		ms += ticks_to_ms;
+	}
+	return ms - start_ms;
+}
+
 int key_map(int key)
 {
 	return key;
@@ -225,39 +243,71 @@ int value_map_off(int value)
 void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 {
 	int pos = 0;
+	double rT = 0;
 	uint32_t T = 0;
 	int unhandled_sum = 0;
 	int out_verbose = 1;//out_process;
 	int send_out = out_process;
+	
+	int prev_msg_type = -1;
+	int prev_msg_chan = -1;
+	int prev_send = 0;
 
 	while(pos < length)
 	{
 		uint32_t dt;
-		pos += parse_vbl(buf+pos, &dt);
+		int dpos = parse_vbl(buf+pos, &dt);
+		pos += dpos;
 		uint8_t type = buf[pos]>>4;
 		uint8_t channel = buf[pos]&0x0F;
 		uint8_t b1 = buf[pos+1];
 		uint8_t b2 = buf[pos+2];
 		int handled = 0;
 		uint32_t cur_tempo = 0;
-		if(!tempo_fixed)
-		{
-			cur_tempo = get_tempo(T);
-			ticks_to_ms = ((double)cur_tempo / 1000.0) / (double)(ticks_per_qn);
-		}
-		T += dt * ticks_to_ms;
+		double dt_ms = get_dt_ms(T, dt);
+		rT += dt_ms ;//dt * ticks_to_ms;
+		T = rT;
 		sMIDI_event evt;
 		evt.active = 1;
 		evt.T = T;
 		evt.channel = channel;
 		evt.track = track_num;
+		
+//		printf("(%d, %d) ", T, dt_ms);
+//		for(int nn = 0; nn < 16; nn++)
+//			printf("%02X ", buf[pos-dpos+nn]);
+//		printf("\n");
+		if(0)if(buf[pos] < 128 && buf[pos] > 0)
+		{
+			handled = 1;
+			pos += 1;
+		}
+		if(1)if(prev_msg_type != -1 && buf[pos] < 127)
+		{
+//			printf("(%d) controller?\n", T);
+//			pos++;
+			evt.type = prev_msg_type;
+			evt.key = buf[pos];
+			evt.channel = prev_msg_chan;
+			evt.value = buf[pos+1];
+			if(prev_send)
+				add_event(evt);
+			handled = 1;
+			pos++;
+			if(prev_msg_type <= evt_ctrl_change)
+				pos++;//= 3;
+//			else
+//				pos += 1;
+		}
 		if(type >= 0x8 && type < 0xF)
 		{
 			out_verbose = 0;
-			if(type == 8)
+			if(type == 8 || type == 0)
 			{
+				prev_send = 0;
 				if(send_out & SEND_NOTE_OFF)
 				{
+					prev_send = 1;
 					evt.type = evt_note_off;
 					evt.key = b1;
 					evt.value = b2;
@@ -265,11 +315,15 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				}
 				pos += 3;
 				handled = 1;
+				prev_msg_type = evt_note_off;
+				prev_msg_chan = channel;
 			}
 			if(type == 9)
 			{
+				prev_send = 0;
 				if(send_out & SEND_NOTE_ON)
 				{
+					prev_send = 1;
 					evt.type = evt_note_on;
 					evt.key = b1;
 					evt.value = b2;
@@ -277,11 +331,15 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				}
 				pos += 3;
 				handled = 1;
+				prev_msg_type = evt_note_on;
+				prev_msg_chan = channel;
 			}
 			if(type == 0xA)
 			{
+				prev_send = 0;
 				if(send_out & SEND_AFTERTOUCH)
 				{
+					prev_send = 1;
 					evt.type = evt_aftertouch;
 					evt.key = b1;
 					evt.value = b2;
@@ -290,11 +348,15 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				if(out_verbose) printf("(%d) ch %d aft %d, v %d\n", T, channel, b1, b2);
 				pos += 3;
 				handled = 1;
+				prev_msg_type = evt_aftertouch;
+				prev_msg_chan = channel;
 			}
 			if(type == 0xB)
 			{
+				prev_send = 0;
 				if(send_out & SEND_CTRL_CHANGE)
 				{
+					prev_send = 1;
 					evt.type = evt_ctrl_change;
 					evt.key = b1;
 					evt.value = b2;
@@ -303,11 +365,15 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				if(out_verbose) printf("(%d) ch %d cc %d, cv %d\n", T, channel, b1, b2);
 				pos += 3;
 				handled = 1;
+				prev_msg_type = evt_ctrl_change;
+				prev_msg_chan = channel;
 			}
 			if(type == 0xC)
 			{
+				prev_send = 0;
 				if(send_out & SEND_PROG_CHANGE)
 				{
+					prev_send = 1;
 					evt.type = evt_prog_change;
 					evt.key = 255;
 					evt.value = b1;
@@ -316,11 +382,15 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				if(out_verbose) printf("(%d) ch %d prog %d\n", T, channel, b1);
 				pos += 2;
 				handled = 1;
+				prev_msg_type = evt_prog_change;
+				prev_msg_chan = channel;
 			}
 			if(type == 0xD)
 			{
+				prev_send = 0;
 				if(send_out & SEND_CHAN_KEYPRES)
 				{
+					prev_send = 1;
 					evt.type = evt_chan_keypress;
 					evt.key = 255;
 					evt.value = b1;
@@ -330,11 +400,15 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				if(out_verbose) printf("(%d) ch %d AFT %d\n", T, channel, b1);
 				pos += 2;
 				handled = 1;
+				prev_msg_type = evt_chan_keypress;
+				prev_msg_chan = channel;
 			}
 			if(type == 0xE)
 			{
+				prev_send = 0;
 				if(send_out & SEND_PITCH_BEND)
 				{
+					prev_send = 1;
 					evt.type = evt_pitch_bend;
 					evt.key = 255;
 					evt.value = (b2<<8) + b1;
@@ -343,72 +417,190 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				if(out_verbose) printf("(%d) ch %d pitch %d\n", T, channel, (b2<<8) + b1);
 				pos += 3;
 				handled = 1;
+				prev_msg_type = evt_pitch_bend;
+				prev_msg_chan = channel;
 			}
 		}
 		if(type == 0xF)
 		{
+			prev_msg_type = -1;
 			out_verbose = 1;
 			if(channel == 0)
 			{
 				if(out_verbose) printf("(%d) sysex F0\n", T);
 				handled = 1;
-				pos += b1;
+				uint32_t len = 0;
+				int dpos = parse_vbl(buf+pos+1, &len);
+				pos += dpos + len + 1;
+			}
+			if(channel == 1)
+			{
+				if(out_verbose) printf("(%d) MIDI Time Code Qtr. Frame\n", T);
+				handled = 1;
+				pos += 3;
+			}
+			if(channel == 2)
+			{
+				if(out_verbose) printf("(%d) Song Position Pointer\n", T);
+				handled = 1;
+				pos += 3;
+			}
+			if(channel == 3)
+			{
+				if(out_verbose) printf("(%d) Song Select\n", T);
+				handled = 1;
+				pos += 2;
+			}
+			if(channel == 6)
+			{
+				if(out_verbose) printf("(%d) Tune Request\n", T);
+				handled = 1;
+				pos += 1;
 			}
 			if(channel == 7)
 			{ 
 				if(out_verbose) printf("(%d) sysex F7\n", T);
 				handled = 1;
-				pos += b1;
+				uint32_t len = 0;
+				int dpos = parse_vbl(buf+pos+1, &len);
+				pos += dpos + len + 1;
+			}
+			if(channel == 8)
+			{
+				if(out_verbose) printf("(%d) Timing clock\n", T);
+				handled = 1;
+				pos += 1;
+			}
+			if(channel == 0xA)
+			{
+				if(out_verbose) printf("(%d) Start\n", T);
+				handled = 1;
+				pos += 1;
+			}
+			if(channel == 0xB)
+			{
+				if(out_verbose) printf("(%d) Stop\n", T);
+				handled = 1;
+				pos += 1;
 			}
 			if(channel == 0xF) //meta event
 			{
+				uint32_t len = 0;
+				if(b1 >= 1 && b1 <= 9 || b1 == 0x7F)
+				{
+					int dpos = parse_vbl(buf+pos+2, &len);
+//					printf("vbl: %d %d\n", dpos, len);
+					pos += dpos+2;
+//					b1 = buf[pos+1];
+//					b2 = buf[pos+2];
+//					pos++; //b1
+				}
+				
 				if(b1 == 0)
 				{
 					if(out_verbose) printf("(%d) meta 0\n", T); 
 					handled = 1; 
-					pos += 5;
+					pos += 4;
 				}
 				if(b1 == 1)
 				{
-					if(out_verbose) printf("(%d) meta text\n", T); 
+					if(out_verbose)
+					{
+						printf("(%d) meta text: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
 					handled = 1; 
-					pos += 3+b2;
+					pos += len;
 				}
 				if(b1 == 2)
 				{
-					if(out_verbose) printf("(%d) meta copyright\n", T);
+					if(out_verbose)
+					{
+						printf("(%d) meta copyright: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
 					handled = 1; 
-					pos += 3+b2;
+					pos += len;
 				}
 				if(b1 == 3)
 				{ 
-					if(out_verbose) printf("(%d) meta Track Name\n", T); 
+					if(out_verbose)
+					{
+						printf("(%d) meta Track Name (%d): ", T, pos); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
 					handled = 1; 
-					pos += 3+b2;
+					pos += len;
 				}
 				if(b1 == 4) 
 				{
-					if(out_verbose) printf("(%d) meta Instrument Name\n", T); 
+					if(out_verbose)
+					{
+						printf("(%d) meta Instrument Name: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
+					
 					handled = 1; 
-					pos += 3+b2;
+					pos += len;
 				}
 				if(b1 == 5)
 				{
-					if(out_verbose) printf("(%d) meta Lyrics\n", T); 
+					if(out_verbose)
+					{
+						printf("(%d) meta Lyrics: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
 					handled = 1; 
-					pos += 3+b2;
+					pos += len;
 				}
 				if(b1 == 6) 
 				{
-					if(out_verbose) printf("(%d) meta Marker\n", T); 
+					if(out_verbose)
+					{
+						printf("(%d) meta Marker: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
 					handled = 1; 
-					pos += 3+b2;
+					pos += len;
 				}
 				if(b1 == 7) 
 				{
-					if(out_verbose) printf("(%d) meta Cue Point\n", T); 
+					if(out_verbose)
+					{
+						printf("(%d) meta Cue Point: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
 					handled = 1; 
-					pos += 3+b2;
+					pos += len;
+				}
+				if(b1 == 8) 
+				{
+					if(out_verbose)
+					{
+						printf("(%d) meta Program Name: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
+					handled = 1; 
+					pos += len;
+				}
+				if(b1 == 9) 
+				{
+					if(out_verbose)
+					{
+						printf("(%d) meta Device Name: ", T); 
+						for(int x = 0; x < len; x++) printf("%c", buf[pos+x]);
+						printf("\n");
+					}
+					handled = 1; 
+					pos += len;
 				}
 				if(b1 == 0x20) 
 				{
@@ -461,20 +653,28 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 				{
 					if(out_verbose) printf("(%d) meta Sequencer-Specific\n", T); 
 					handled = 1; 
-					pos += 2+b2;
+					pos += len;
 				}
 				if(!handled) 
 				{
 					if(out_verbose) fprintf(stderr, "unhandled meta: %02X %02X %02X %02X %02X %02X %02X %02X\n", b1, b2, buf[pos+3], buf[pos+4], buf[pos+5], buf[pos+6], buf[pos+7], buf[pos+8]); 
-					pos += 2+b2;
+					pos += len;
 				}
 			}
 			
 		}
 		if(!handled)
 		{ 
-			if(out_verbose) fprintf(stderr, "(%d) unhandled %02X %02X %02X %02X %02X %02X %02X %02X\n", T, buf[pos-2], buf[pos-1], buf[pos], buf[pos+1], buf[pos+2], buf[pos+3], buf[pos+4], buf[pos+5]); 
+			//if(out_verbose) 
+			//fprintf(stderr, "(%d) unhandled %02X %02X %02X %02X %02X %02X %02X %02X\n", T, buf[pos-2], buf[pos-1], buf[pos], buf[pos+1], buf[pos+2], buf[pos+3], buf[pos+4], buf[pos+5]); 
+			printf("(%d, %d) unhandled ", T, pos);
+			for(int nn = 0; nn < 16; nn++)
+				printf("%02X ", buf[pos-3+nn]);
+			printf("\n");
+			
 			unhandled_sum++;
+			
+			rT -= dt_ms;
 		}
 	}
 	fprintf(stderr, "unhandled messages: %d\n", unhandled_sum);
