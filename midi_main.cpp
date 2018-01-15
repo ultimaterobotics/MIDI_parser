@@ -176,7 +176,7 @@ void save_events(char *fname, uint64_t track_mask)
 		if(!((1<<events[x].track) & track_mask)) continue;
 		
 		int len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
-//		int conv[16];
+/*		int conv[16];
 		conv[0] = 2;
 		conv[1] = 1;
 		conv[7] = 4;
