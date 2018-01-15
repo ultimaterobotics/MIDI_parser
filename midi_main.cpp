@@ -176,12 +176,12 @@ void save_events(char *fname, uint64_t track_mask)
 		if(!((1<<events[x].track) & track_mask)) continue;
 		
 		int len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
-/*		int conv[16];
+//		int conv[16];
 		conv[0] = 2;
 		conv[1] = 1;
 		conv[7] = 4;
 		int len = sprintf(tbuf, "%d,%d,%d,%d\n", events[x].T, conv[events[x].type], events[x].key, events[x].value*(events[x].type != 0));
-*/
+//*/
 		if(write(handle, tbuf, len) < len)
 			fprintf(stderr, "write %d bytes failed\n", len);
 
@@ -486,7 +486,7 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 			if(channel == 0xF) //meta event
 			{
 				uint32_t len = 0;
-				if(b1 >= 1 && b1 <= 9 || b1 == 0x7F)
+				if(b1 >= 1 && b1 <= 9 || b1 == 0x7F || b1 == 0x60)
 				{
 					int dpos = parse_vbl(buf+pos+2, &len);
 //					printf("vbl: %d %d\n", dpos, len);
@@ -608,6 +608,12 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 					handled = 1; 
 					pos += 4;
 				}
+				if(b1 == 0x21) 
+				{
+					if(out_verbose) printf("(%d) meta port prefix\n", T); 
+					handled = 1; 
+					pos += 4;
+				}
 				if(b1 == 0x2F) 
 				{
 					if(out_verbose) printf("(%d) meta track end\n", T); 
@@ -648,6 +654,12 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 					if(out_verbose) printf("(%d) meta Key Signature\n", T); 
 					handled = 1; 
 					pos += 5;
+				}
+				if(b1 == 0x60) 
+				{
+					if(out_verbose) printf("(%d) meta XMF\n", T); 
+					handled = 1; 
+					pos += len;
 				}
 				if(b1 == 0x7F) 
 				{
