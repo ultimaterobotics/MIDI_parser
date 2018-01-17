@@ -124,6 +124,7 @@ void sort_events()
 
 void process_overlaps(int overlap_master)
 {
+//	printf("overlaps:\n");
 	uint8_t keys_on[255];
 	int keys_last_time[255];
 	for(int x = 0; x < 255; x++)
@@ -131,33 +132,50 @@ void process_overlaps(int overlap_master)
 		keys_on[x] = 0;
 		keys_last_time[x] = -1;
 	}
-	for(int n = 0; n < events_count; n++)
+	int cur_events_count = events_count;
+	for(int n = 0; n < cur_events_count; n++)
 	{
 		sMIDI_event *evt = events+n;
 		if(evt->type < 2)
 		{
-			if(evt->T - keys_last_time[evt->key] < 1) evt->T++; //potentially can lead to wrong events order in the output, but practically unlikely
+			if(evt->T - keys_last_time[evt->key] < 1)
+			{
+				evt->T++; //potentially can lead to wrong events order in the output, but practically unlikely
+//				printf("shifted at %d\n", evt->T);
+			}
 			keys_last_time[evt->key] = evt->T;
 		}
-		if(evt->type == 1)
+		if(evt->type == 1 && evt->value > 0)
 		{
 			if(keys_on[evt->key])
 			{
-				if(evt->track == overlap_master)
-					keys_on[evt->key]++;
-				evt->active = 0;
+				sMIDI_event e2;
+				e2.set_to(*evt);
+				e2.type = evt_note_off;
+				e2.value = 0;
+				e2.T = evt->T-1;
+				add_event(e2);
+//				if(evt->track == overlap_master)
+//					keys_on[evt->key]++;
+//				evt->active = 0;
+//				printf("inserted cut at %d\n", e2.T);
 			}
+			keys_on[evt->key] = 1;
 		}
-		if(evt->type == 0)
+		if(evt->type == 0 || evt->value == 0)
 		{
-			if(keys_on[evt->key] > 1)
-			{ 
-				keys_on[evt->key]--;
-				evt->active = 0;
-			}
-			else keys_on[evt->key] = 0;
+//			if(keys_on[evt->key] > 1)
+//			{ 
+//				keys_on[evt->key]--;
+//				evt->active = 0;
+//				printf("cut at %d\n", evt->T);
+//			}
+//			else keys_on[evt->key] = 0;
+			if(keys_on[evt->key] == 0) evt->active = 0;
+			keys_on[evt->key] = 0;
 		}
 	}
+	sort_events();
 }
 
 void save_events(char *fname, uint64_t track_mask)
@@ -174,13 +192,18 @@ void save_events(char *fname, uint64_t track_mask)
 	for(int x = 0; x < events_count; x++)
 	{
 		if(!((1<<events[x].track) & track_mask)) continue;
+		if(!events[x].active) continue;
 		
 		int len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
 /*		int conv[16];
 		conv[0] = 2;
 		conv[1] = 1;
 		conv[7] = 4;
-		int len = sprintf(tbuf, "%d,%d,%d,%d\n", events[x].T, conv[events[x].type], events[x].key, events[x].value*(events[x].type != 0));
+		int len;
+		if(events[x].value == 0 && events[x].type == 1)
+			len = sprintf(tbuf, "%d,%d,%d,%d\n", events[x].T, 0, events[x].key, events[x].value*(events[x].type != 0));
+		else
+			len = sprintf(tbuf, "%d,%d,%d,%d\n", events[x].T, conv[events[x].type], events[x].key, events[x].value*(events[x].type != 0));
 //*/
 		if(write(handle, tbuf, len) < len)
 			fprintf(stderr, "write %d bytes failed\n", len);
