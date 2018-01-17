@@ -90,8 +90,10 @@ int events_count = 0;
 int events_size = 0;
 int event_count_memstep = 100;
 
+int zero_to_off = 0;
+
 void add_event(sMIDI_event evt)
-{
+{	
 	if(events_count >= events_size)
 	{
 		events_size += event_count_memstep;
@@ -102,6 +104,13 @@ void add_event(sMIDI_event evt)
 		events = ee;
 	}
 	events[events_count].set_to(evt);
+	if(zero_to_off)
+		if(events[events_count].type == evt_note_on && events[events_count].value == 0) 
+		{
+			events[events_count].type = evt_note_off;
+			events[events_count].value = 64;
+		}
+	
 	events_count++;
 }
 
@@ -194,7 +203,8 @@ void save_events(char *fname, uint64_t track_mask)
 		if(!((1<<events[x].track) & track_mask)) continue;
 		if(!events[x].active) continue;
 		
-		int len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
+		int len;
+		len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
 /*		int conv[16];
 		conv[0] = 2;
 		conv[1] = 1;
@@ -808,6 +818,7 @@ int main(int argc, char **argv)
 
 		printf("\n\nAdditional options:\n");
 		printf("\tCUTOVP - cut overlapping notes\n");
+		printf("\t0toOFF - convert note on event with stroke value 0 into note off event with stroke value 0\n");		
 
 		printf("\nBy default, events Note On, Note off and Track End are stored, all others ignored\n");
 		printf("example:\n");
@@ -857,6 +868,7 @@ int main(int argc, char **argv)
 		}
 		
 		if(str_eq(argv[a], "-CUTOVP")) prevent_overlap = 1;
+		if(str_eq(argv[a], "-0toOFF")) zero_to_off = 1;
 	}
 	if(track_mask == 0) track_mask = 0xFFFFFFFFFFFFFFFF;
 
