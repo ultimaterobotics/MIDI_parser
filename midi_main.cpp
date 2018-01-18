@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <math.h>
 
 #define SEND_NOTE_OFF		0b00000001
 #define SEND_NOTE_ON		0b00000010
@@ -874,11 +875,12 @@ int main(int argc, char **argv)
 
 	read_file(argv[argc-2]);
 	if(file_length < 1) return 1;
-	
+
 	parse_midi(file_buf, file_length, send_events);
 	sort_events();
 	if(prevent_overlap)
 		process_overlaps(overlap_master);
+			
 	save_events(argv[argc-1], track_mask);
 	
 	delete[] file_buf;
