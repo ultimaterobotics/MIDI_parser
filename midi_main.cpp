@@ -188,6 +188,171 @@ void process_overlaps(int overlap_master)
 	sort_events();
 }
 
+int get_next_keyup(uint32_t cur_time, int key)
+{
+	uint32_t min_ok_time = events[events_count-1].T;
+	int id = -1;
+	for(int n = 0; n < events_count; n++)
+	{
+		if(!events[n].active) continue;
+		if(events[n].key == key && events[n].T > cur_time)
+		{
+			if(events[n].type == evt_note_off && events[n].T < min_ok_time)
+			{
+				min_ok_time = events[n].T;
+				id = n;
+			}
+		}
+	}
+	return id;
+}
+
+int get_next_keydown(uint32_t cur_time, int key)
+{
+	uint32_t min_ok_time = events[events_count-1].T;
+	int id = -1;
+	for(int n = 0; n < events_count; n++)
+	{
+		if(!events[n].active) continue;
+		if(events[n].key == key && events[n].T > cur_time)
+		{
+			if(events[n].type == evt_note_on && events[n].T < min_ok_time)
+			{
+				min_ok_time = events[n].T;
+				id = n;
+			}
+		}
+	}
+	return id;
+}
+
+//all intervals in microseconds
+#define MIN_NOTE_LENGTH 90000
+#define MIN_NOTE_GAP 80000
+#define MULTIPLIER_SPLIT_RELEASE_TIME 0.68
+#define SHORT_NOTE_MULT 2.0
+
+#define NOTE_LOW_VALUE 135
+#define NOTE_HIGH_VALUE 155
+#define NOTE_HOLD_VALUE 75
+#define NOTE_ON_TO_HOLD 90000
+
+float key_coeffs[150];
+float key_shifts[150];
+
+void init_volume_coeffs()
+{
+	for(int x = 0; x < 150; x++)
+	{
+		key_coeffs[x] = 1.0;
+		key_shifts[x] = 0.0;
+	}
+}
+void process_volume()
+{
+	float vmin = NOTE_LOW_VALUE;
+	float range = NOTE_HIGH_VALUE - NOTE_LOW_VALUE;
+	for(int n = 0; n < events_count; n++)
+	{
+		if(!events[n].active) continue;
+		if(events[n].type == evt_note_on)
+		{
+			float val = events[n].value;
+			val /= 255.0;
+			val *= key_coeffs[events[n].key];
+			val = vmin + val*range + key_shifts[events[n].key];
+			events[n].value = val;
+		}
+	}
+}
+
+void note_postprocessor()
+{
+	init_volume_coeffs();
+	process_volume();
+	for(int n = 0; n < events_count; n++)
+	{
+		if(!events[n].active) continue;
+		if(events[n].type == evt_note_on)
+		{
+			int up = get_next_keyup(events[n].T, events[n].key);
+			if(up < 0) continue;
+			int down = get_next_keydown(events[up].T, events[up].key);
+			if(down < 0) continue;
+			uint32_t gap = events[down].T - events[up].T;
+			double dt = events[down].T - events[n].T;
+			if(gap < MIN_NOTE_GAP)
+			{
+				events[up].T = events[n].T + (1.0-MULTIPLIER_SPLIT_RELEASE_TIME)*dt;
+				uint32_t len = events[up].T - events[n].T;
+				if(len < MIN_NOTE_LENGTH) //subject to volume increase
+				{
+					float coeff = (double)len / (double)MIN_NOTE_LENGTH;
+					float val = events[n].value - NOTE_LOW_VALUE;
+					val *= SHORT_NOTE_MULT * (1.0 - coeff)*(1.0 - coeff);
+					val += NOTE_LOW_VALUE;
+					if(val > 255) val = 255;
+					events[n].value = val;
+				}
+			}
+		}
+	}
+	
+	int cur_events_count = events_count;
+	for(int n = 0; n < cur_events_count; n++)
+	{
+		if(!events[n].active) continue;
+		if(events[n].type == evt_note_on)
+		{
+			int up = get_next_keyup(events[n].T, events[n].key);
+			if(up < 0) continue;
+			if(events[up].T > events[n].T + NOTE_ON_TO_HOLD)
+			{
+				sMIDI_event evt;
+				evt.set_to(events[n]);
+				evt.value = NOTE_HOLD_VALUE;
+				add_event(evt);
+			}
+		}
+	}
+	sort_events();
+}
+
+void save_python_script(char *fname, uint64_t track_mask)
+{
+	int handle = open(fname, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
+	
+	if(handle < 1)
+	{
+		fprintf(stderr, "can't open/create output file %s\n", fname);
+		return;
+	}
+	
+	char tbuf[1024];
+	int len;
+
+	len = sprintf(tbuf, "import serial\n");
+	len += sprintf(tbuf+len, "import time\n");
+	len += sprintf(tbuf+len, "ser = serial.Serial('COM3', 115200, timeout=5)\n");
+	len += sprintf(tbuf+len, "time.sleep(3)\n\n");
+	len += sprintf(tbuf+len, "#<timestamp,track,channel,event,note,midipower>\n");
+	len += sprintf(tbuf+len, "ser.write('<0,0,0,8,0,0>')\n");
+	write(handle, tbuf, len);
+	for(int x = 0; x < events_count; x++)
+	{
+		if(!((1<<events[x].track) & track_mask)) continue;
+		if(!events[x].active) continue;
+		
+		int len;
+		len = sprintf(tbuf, "ser.write('<%d,%d,%d,%d,%d,%d>')\nser.readline()\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
+		if(write(handle, tbuf, len) < len)
+			fprintf(stderr, "write %d bytes failed\n", len);
+
+	}
+	close(handle);
+}
+
+
 void save_events(char *fname, uint64_t track_mask)
 {
 	int handle = open(fname, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
@@ -206,16 +371,6 @@ void save_events(char *fname, uint64_t track_mask)
 		
 		int len;
 		len = sprintf(tbuf, "%d,%d,%d,%d,%d,%d\n", events[x].T, events[x].track, events[x].channel, events[x].type, events[x].key, events[x].value);
-/*		int conv[16];
-		conv[0] = 2;
-		conv[1] = 1;
-		conv[7] = 4;
-		int len;
-		if(events[x].value == 0 && events[x].type == 1)
-			len = sprintf(tbuf, "%d,%d,%d,%d\n", events[x].T, 0, events[x].key, events[x].value*(events[x].type != 0));
-		else
-			len = sprintf(tbuf, "%d,%d,%d,%d\n", events[x].T, conv[events[x].type], events[x].key, events[x].value*(events[x].type != 0));
-//*/
 		if(write(handle, tbuf, len) < len)
 			fprintf(stderr, "write %d bytes failed\n", len);
 
@@ -520,7 +675,7 @@ void parse_track(uint8_t *buf, int length, int out_process, int track_num)
 			if(channel == 0xF) //meta event
 			{
 				uint32_t len = 0;
-				if(b1 >= 1 && b1 <= 9 || b1 == 0x7F || b1 == 0x60)
+				if((b1 >= 1 && b1 <= 9) || b1 == 0x7F || b1 == 0x60)
 				{
 					int dpos = parse_vbl(buf+pos+2, &len);
 //					printf("vbl: %d %d\n", dpos, len);
@@ -840,6 +995,8 @@ int main(int argc, char **argv)
 	uint64_t track_mask = 0;
 	int prevent_overlap = 0;
 	int overlap_master = 1;
+	int need_postprocess = 0;
+	int make_python = 0;
 
 	for(int a = 1; a < argc-2; a++)
 	{
@@ -870,6 +1027,15 @@ int main(int argc, char **argv)
 		
 		if(str_eq(argv[a], "-CUTOVP")) prevent_overlap = 1;
 		if(str_eq(argv[a], "-0toOFF")) zero_to_off = 1;
+
+		if(str_eq(argv[a], "-PYTHON"))
+		{
+			send_events = SEND_NOTE_ON | SEND_NOTE_OFF | SEND_TRACK_END;
+			prevent_overlap = 1;
+			zero_to_off = 1;
+			need_postprocess = 1;
+			make_python = 1;
+		}
 	}
 	if(track_mask == 0) track_mask = 0xFFFFFFFFFFFFFFFF;
 
@@ -880,8 +1046,14 @@ int main(int argc, char **argv)
 	sort_events();
 	if(prevent_overlap)
 		process_overlaps(overlap_master);
-			
-	save_events(argv[argc-1], track_mask);
+	
+	if(need_postprocess)
+		note_postprocessor();
+	
+	if(make_python)
+		save_python_script(argv[argc-1], track_mask);
+	else
+		save_events(argv[argc-1], track_mask);
 	
 	delete[] file_buf;
 	return 0;
