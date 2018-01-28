@@ -190,14 +190,14 @@ void process_overlaps(int overlap_master)
 
 int get_next_keyup(uint32_t cur_time, int key)
 {
-	uint32_t min_ok_time = events[events_count-1].T;
+	uint32_t min_ok_time = 0xFFFFFFFF;
 	int id = -1;
 	for(int n = 0; n < events_count; n++)
 	{
 		if(!events[n].active) continue;
-		if(events[n].key == key && events[n].T > cur_time)
+		if(events[n].key == key && events[n].T > cur_time && events[n].T < min_ok_time)
 		{
-			if(events[n].type == evt_note_off && events[n].T < min_ok_time)
+			if(events[n].type == evt_note_off || (events[n].type == evt_note_on && events[n].value == 0))
 			{
 				min_ok_time = events[n].T;
 				id = n;
@@ -209,14 +209,14 @@ int get_next_keyup(uint32_t cur_time, int key)
 
 int get_next_keydown(uint32_t cur_time, int key)
 {
-	uint32_t min_ok_time = events[events_count-1].T;
+	uint32_t min_ok_time = 0xFFFFFFFF;
 	int id = -1;
 	for(int n = 0; n < events_count; n++)
 	{
 		if(!events[n].active) continue;
-		if(events[n].key == key && events[n].T > cur_time)
+		if(events[n].key == key && events[n].T > cur_time && events[n].T < min_ok_time)
 		{
-			if(events[n].type == evt_note_on && events[n].T < min_ok_time)
+			if(events[n].type == evt_note_on && events[n].value > 0)
 			{
 				min_ok_time = events[n].T;
 				id = n;
@@ -226,16 +226,16 @@ int get_next_keydown(uint32_t cur_time, int key)
 	return id;
 }
 
-//all intervals in microseconds
-#define MIN_NOTE_LENGTH 90000
-#define MIN_NOTE_GAP 80000
+//all intervals in milliseconds
+#define MIN_NOTE_LENGTH 90
+#define MIN_NOTE_GAP 80
 #define MULTIPLIER_SPLIT_RELEASE_TIME 0.68
 #define SHORT_NOTE_MULT 2.0
 
 #define NOTE_LOW_VALUE 135
 #define NOTE_HIGH_VALUE 155
 #define NOTE_HOLD_VALUE 75
-#define NOTE_ON_TO_HOLD 90000
+#define NOTE_ON_TO_HOLD 90
 
 float key_coeffs[150];
 float key_shifts[150];
@@ -302,14 +302,16 @@ void note_postprocessor()
 	for(int n = 0; n < cur_events_count; n++)
 	{
 		if(!events[n].active) continue;
-		if(events[n].type == evt_note_on)
+		if(events[n].type == evt_note_on && events[n].value > 0)
 		{
 			int up = get_next_keyup(events[n].T, events[n].key);
-			if(up < 0) continue;
+			if(up < 0)
+				continue;
 			if(events[up].T > events[n].T + NOTE_ON_TO_HOLD)
 			{
 				sMIDI_event evt;
 				evt.set_to(events[n]);
+				evt.T = events[n].T + NOTE_ON_TO_HOLD;
 				evt.value = NOTE_HOLD_VALUE;
 				add_event(evt);
 			}
